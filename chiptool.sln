@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.36105.23
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "chiptool", "chiptool.csproj", "{1541586F-49C0-4807-AEC8-95DE34BF2349}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1541586F-49C0-4807-AEC8-95DE34BF2349}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1541586F-49C0-4807-AEC8-95DE34BF2349}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1541586F-49C0-4807-AEC8-95DE34BF2349}.Debug|x64.ActiveCfg = Debug|x64
+		{1541586F-49C0-4807-AEC8-95DE34BF2349}.Debug|x64.Build.0 = Debug|x64
+		{1541586F-49C0-4807-AEC8-95DE34BF2349}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1541586F-49C0-4807-AEC8-95DE34BF2349}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1541586F-49C0-4807-AEC8-95DE34BF2349}.Release|x64.ActiveCfg = Release|x64
+		{1541586F-49C0-4807-AEC8-95DE34BF2349}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {7D0AED7A-42A0-451C-8CC4-6C263D091D99}
+	EndGlobalSection
+EndGlobal
