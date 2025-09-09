@@ -1,759 +1,773 @@
-﻿using System;
-using System.Diagnostics;
+using System;
+using System.Globalization;
 using System.Linq;
-using System.Management;
-using System.Runtime.InteropServices;
-using System.Security.Principal;
-using OpenLibSys;
 
-public class chiplib
+namespace chiptool
 {
-    private readonly Ols ols;
-
-    public chiplib()
+    internal class Program
     {
-        if (!IsAdmin())
-            throw new MsrException("This application must be run as Administrator.");
-
-        ols = new Ols();
-        CheckLibraryStatus();
-    }
-
-    public static bool IsAdmin()
-    {
-        using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+        static void Main(string[] args)
         {
-            return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
-        }
-    }
-
-    private void CheckLibraryStatus()
-    {
-        uint status = ols.GetStatus();
-        if (status != (uint)Ols.Status.NO_ERROR)
-            throw new MsrException($"OpenLibSys Initialization Failed. Status Code: {status}");
-
-        uint dllStatus = ols.GetDllStatus();
-        if (dllStatus != (uint)Ols.OlsDllStatus.OLS_DLL_NO_ERROR)
-            throw new MsrException($"WinRing0 driver is not properly loaded. DLL Status Code: {dllStatus}");
-    }
-
-    public bool ReadPmc(uint index, out ulong value)
-    {
-        uint eax = 0;
-        uint edx = 0;
-
-        int result = ols.Rdpmc(index, ref eax, ref edx);
-
-        if (result != (int)Ols.Status.NO_ERROR)
-        {
-            value = ((ulong)edx << 32) | eax;
-            return true;
-        }
-        else
-        {
-            value = 0;
-            return false;
-        }
-    }
-
-    public bool ReadMsr(uint msrIndex, out ulong value)
-    {
-        uint eax = 0, edx = 0;
-
-        if (ols.RdmsrTx(msrIndex, ref eax, ref edx, (UIntPtr)1) != 0)
-        {
-            value = ((ulong)edx << 32) | eax;
-            return true;
-        }
-        else
-        {
-            value = 0;
-            return false;
-        }
-    }
-
-    public bool WriteMsr(uint msrIndex, ulong value, bool allProcessors = false)
-    {
-        uint eax = (uint)(value & 0xFFFFFFFF);
-        uint edx = (uint)(value >> 32);
-        int numProcessors = 1;
-
-        if (allProcessors)
-        {
-            try
+            if (args.Length == 0 || args.Contains("--help") || args.Contains("--h") || args.Contains("/?"))
             {
-                numProcessors = Environment.ProcessorCount;
+                PrintHelp();
+                return;
             }
-            catch
+
+            chiplib chipLib = new chiplib();
+
+            int paramIndex = 0;
+
+            if (args[paramIndex] == "--rdmsr")
             {
-                return false;
-            }
-        }
-
-        ulong mask = (1UL << numProcessors) - 1;
-
-        if (allProcessors)
-        {
-            bool success = true;
-            for (int i = 0; i < numProcessors; i++)
-            {
-                ulong individualMask = 1UL << i;
-
-                if (ols.WrmsrTx(msrIndex, eax, edx, (UIntPtr)individualMask) == 0)
+                paramIndex++;
+                var address = args.ElementAtOrDefault(paramIndex);
+                if (address != null)
                 {
-                    success = false;
+                    ulong msrValue;
+                    if (chipLib.ReadMsr(Convert.ToUInt32(address, 16), out msrValue))
+                    {
+                        uint eax = (uint)(msrValue & 0xFFFFFFFF);
+                        uint edx = (uint)(msrValue >> 32);
+                        Console.WriteLine($"0x{Convert.ToUInt32(address, 16):X8} 0x{edx:X8} 0x{eax:X8}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Failed to read MSR.");
+                    }
                 }
             }
-            return success;
-        }
-        else
-        {
-            if (ols.WrmsrTx(msrIndex, eax, edx, (UIntPtr)mask) != 0)
+            else if (args[paramIndex] == "--wrmsr")
             {
-                return true;
+                paramIndex++;
+                var address = args.ElementAtOrDefault(paramIndex++);
+                var edx = args.ElementAtOrDefault(paramIndex++);
+                var eax = args.ElementAtOrDefault(paramIndex++);
+                if (address != null && edx != null && eax != null)
+                {
+                    ulong value = ((ulong)Convert.ToUInt32(edx, 16) << 32) | Convert.ToUInt32(eax, 16);
+                    Console.WriteLine($"0x{Convert.ToUInt32(address, 16):X8} 0x{Convert.ToUInt32(edx, 16):X8} 0x{Convert.ToUInt32(eax, 16):X8}");
+                }
+                else
+                {
+                    Console.WriteLine($"Failed to write MSR.");
+                }
+            }
+            else if (args[paramIndex] == "--rdpci")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var busDevFunc = args.ElementAtOrDefault(paramIndex++);
+                var offset = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && busDevFunc != null && offset != null)
+                {
+                    var busDevFuncParts = busDevFunc.Split(':');
+
+                    if (busDevFuncParts.Length == 3 &&
+                        uint.TryParse(busDevFuncParts[0], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint bus) &&
+                        uint.TryParse(busDevFuncParts[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint dev) &&
+                        uint.TryParse(busDevFuncParts[2], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint func) &&
+                        int.TryParse(size, out int sizeInt))
+                    {
+                        int offsetInt;
+
+                        if (offset.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!int.TryParse(offset.Substring(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out offsetInt))
+                            {
+                                Console.WriteLine("Failed to read PCI.");
+                                return;
+                            }
+                        }
+                        else
+                        {
+                            if (!int.TryParse(offset, out offsetInt))
+                            {
+                                Console.WriteLine("Failed to read PCI.");
+                                return;
+                            }
+                        }
+
+                        uint value;
+                        if (!chipLib.ReadPci(bus, dev, func, (byte)offsetInt, sizeInt, out value))
+                        {
+                            Console.WriteLine("Failed to read PCI.");
+                            return;
+                        }
+
+                        Console.WriteLine($"{busDevFuncParts[0]}:{busDevFuncParts[1]}:{busDevFuncParts[2]} 0x{offsetInt:X2} 0x{value:X}");
+                    }
+                }
+            }
+            else if (args[paramIndex] == "--wrpci")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var busDevFunc = args.ElementAtOrDefault(paramIndex++);
+                var offset = args.ElementAtOrDefault(paramIndex++);
+                var value = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && busDevFunc != null && offset != null && value != null)
+                {
+                    if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        value = value.Substring(2);
+                    }
+
+                    int offsetInt;
+
+                    if (offset.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!int.TryParse(offset.Substring(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out offsetInt))
+                        {
+                            Console.WriteLine("Failed to write PCI.");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        if (!int.TryParse(offset, out offsetInt))
+                        {
+                            Console.WriteLine("Failed to write PCI.");
+                            return;
+                        }
+                    }
+
+                    bool success = chipLib.WritePci(
+                        Convert.ToUInt32(busDevFunc.Split(':')[0], 16),
+                        Convert.ToUInt32(busDevFunc.Split(':')[1], 16),
+                        Convert.ToUInt32(busDevFunc.Split(':')[2], 16),
+                        (byte)offsetInt,
+                        uint.Parse(value, System.Globalization.NumberStyles.HexNumber),
+                        int.Parse(size));
+
+                    if (!success)
+                    {
+                        Console.WriteLine("Failed to write PCI.");
+                        return;
+                    }
+
+                    Console.WriteLine($"{busDevFunc} 0x{offsetInt:X2} 0x{value}");
+                }
+            }
+            else if (args[paramIndex] == "--rdio")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var port = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && port != null)
+                {
+                    if (port.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        port = port.Substring(2);
+                    }
+
+                    if (!ushort.TryParse(port, System.Globalization.NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ushort portParsed))
+                    {
+                        Console.WriteLine("Failed to read IO.");
+                        return;
+                    }
+
+                    uint value;
+                    if (!chipLib.ReadIo(portParsed, int.Parse(size), out value))
+                    {
+                        Console.WriteLine("Failed to read IO.");
+                        return;
+                    }
+
+                    Console.WriteLine($"0x{port.PadLeft(4, '0')} 0x{value:X8}");
+                }
+            }
+            else if (args[paramIndex] == "--wrio")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var port = args.ElementAtOrDefault(paramIndex++);
+                var value = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && port != null && value != null)
+                {
+                    if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        value = value.Substring(2);
+                    }
+
+                    if (port.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        port = port.Substring(2);
+                    }
+
+                    if (!ushort.TryParse(port, System.Globalization.NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ushort portParsed))
+                    {
+                        Console.WriteLine("Failed to write IO.");
+                        return;
+                    }
+
+                    bool success = chipLib.WriteIo(portParsed, int.Parse(size), uint.Parse(value, System.Globalization.NumberStyles.HexNumber));
+                    if (!success)
+                    {
+                        Console.WriteLine("Failed to write IO.");
+                        return;
+                    }
+
+                    Console.WriteLine($"0x{port.PadLeft(4, '0')} 0x{value}");
+                }
+            }
+            else if (args[paramIndex] == "--rdmsrb")
+            {
+                paramIndex++;
+                var address = args.ElementAtOrDefault(paramIndex++);
+                var bitRange = args.ElementAtOrDefault(paramIndex++);
+
+                if (address != null && bitRange != null)
+                {
+                    ulong value = 0;
+                    bool success = chipLib.ReadMsrBit(Convert.ToUInt32(address, 16), bitRange, out value);
+
+                    if (!success || value == ulong.MaxValue)
+                    {
+                        Console.WriteLine("Error: Failed to read MSR.");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"0x{address.PadLeft(8, '0')} {bitRange} 0x{value:X}");
+                    }
+                }
+            }
+            else if (args[paramIndex] == "--wrmsrb")
+            {
+                paramIndex++;
+                var address = args.ElementAtOrDefault(paramIndex++);
+                var bitRange = args.ElementAtOrDefault(paramIndex++);
+                var value = args.ElementAtOrDefault(paramIndex++);
+
+                if (address != null && bitRange != null && value != null)
+                {
+                    if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        value = value.Substring(2);
+                    }
+
+                    if (!int.TryParse(value, System.Globalization.NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int newValue))
+                    {
+                        Console.WriteLine("Error: Failed to write MSR.");
+                        return;
+                    }
+
+                    bool success = chipLib.WriteMsrBit(Convert.ToUInt32(address, 16), bitRange, newValue);
+
+                    if (!success)
+                    {
+                        Console.WriteLine("Error: Failed to write MSR.");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"0x{address.PadLeft(8, '0')} {bitRange} 0x{newValue:X}");
+                    }
+                }
+            }
+            else if (args[paramIndex] == "--rdpcib")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var busDevFunc = args.ElementAtOrDefault(paramIndex++);
+                var offset = args.ElementAtOrDefault(paramIndex++);
+                var bitRange = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && busDevFunc != null && offset != null && bitRange != null)
+                {
+                    int offsetInt;
+
+                    if (offset.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!int.TryParse(offset.Substring(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out offsetInt))
+                        {
+                            Console.WriteLine("Failed to read PCI.");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        if (!int.TryParse(offset, out offsetInt))
+                        {
+                            Console.WriteLine("Failed to read PCI.");
+                            return;
+                        }
+                    }
+
+                    ulong value;
+                    if (!chipLib.ReadPciBit(Convert.ToUInt32(busDevFunc.Split(':')[0], 16),
+                                            Convert.ToUInt32(busDevFunc.Split(':')[1], 16),
+                                            Convert.ToUInt32(busDevFunc.Split(':')[2], 16),
+                                            (byte)offsetInt,
+                                            bitRange,
+                                            Convert.ToInt32(size),
+                                            out value))
+                    {
+                        Console.WriteLine("Failed to read PCI.");
+                        return;
+                    }
+
+                    Console.WriteLine($"{busDevFunc} 0x{offsetInt:X2} {bitRange} 0x{value:X}");
+                }
+            }
+            else if (args[paramIndex] == "--wrpcib")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var busDevFunc = args.ElementAtOrDefault(paramIndex++);
+                var offset = args.ElementAtOrDefault(paramIndex++);
+                var bitRange = args.ElementAtOrDefault(paramIndex++);
+                var value = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && busDevFunc != null && offset != null && bitRange != null && value != null)
+                {
+                    int offsetInt;
+
+                    if (offset.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!int.TryParse(offset.Substring(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out offsetInt))
+                        {
+                            Console.WriteLine("Failed to write PCI.");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        if (!int.TryParse(offset, out offsetInt))
+                        {
+                            Console.WriteLine("Failed to write PCI.");
+                            return;
+                        }
+                    }
+
+                    var bitRangeParts = bitRange.Split(':');
+                    int startBit, endBit;
+
+                    if (bitRangeParts.Length == 1)
+                    {
+                        if (!int.TryParse(bitRangeParts[0], out startBit))
+                        {
+                            Console.WriteLine("Failed to write PCI.");
+                            return;
+                        }
+                        endBit = startBit;
+                    }
+                    else if (bitRangeParts.Length == 2)
+                    {
+                        if (!int.TryParse(bitRangeParts[0], out startBit) || !int.TryParse(bitRangeParts[1], out endBit))
+                        {
+                            Console.WriteLine("Failed to write PCI.");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("Failed to write PCI.");
+                        return;
+                    }
+
+                    if (startBit < 0 || endBit > 31 || startBit > endBit)
+                    {
+                        Console.WriteLine("Failed to write PCI.");
+                        return;
+                    }
+
+                    uint newValue;
+                    if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        value = value.Substring(2);
+                    }
+                    if (!uint.TryParse(value, System.Globalization.NumberStyles.HexNumber, CultureInfo.InvariantCulture, out newValue))
+                    {
+                        Console.WriteLine("Failed to write PCI.");
+                        return;
+                    }
+
+                    bool success = chipLib.WritePciBit(Convert.ToUInt32(busDevFunc.Split(':')[0], 16),
+                                                       Convert.ToUInt32(busDevFunc.Split(':')[1], 16),
+                                                       Convert.ToUInt32(busDevFunc.Split(':')[2], 16),
+                                                       (byte)offsetInt,
+                                                       bitRange,
+                                                       newValue,
+                                                       Convert.ToInt32(size));
+
+                    if (!success)
+                    {
+                        Console.WriteLine("Failed to write PCI.");
+                        return;
+                    }
+
+                    Console.WriteLine($"{busDevFunc} 0x{offsetInt:X2} {bitRange} 0x{newValue:X}");
+                }
+            }
+            else if (args[paramIndex] == "--rdiob")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var port = args.ElementAtOrDefault(paramIndex++);
+                var bitRange = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && port != null && bitRange != null)
+                {
+                    int startBit, endBit;
+
+                    if (port.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        port = port.Substring(2);
+                    }
+
+                    if (!ushort.TryParse(port, System.Globalization.NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ushort portParsed))
+                    {
+                        Console.WriteLine("Failed to read IO.");
+                        return;
+                    }
+
+                    var bitRangeParts = bitRange.Split(':');
+                    if (bitRangeParts.Length == 1)
+                    {
+                        if (!int.TryParse(bitRangeParts[0], out startBit))
+                        {
+                            Console.WriteLine("Failed to read IO.");
+                            return;
+                        }
+                        endBit = startBit;
+                    }
+                    else if (bitRangeParts.Length == 2)
+                    {
+                        if (!int.TryParse(bitRangeParts[0], out startBit) || !int.TryParse(bitRangeParts[1], out endBit))
+                        {
+                            Console.WriteLine("Failed to read IO.");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("Failed to read IO.");
+                        return;
+                    }
+
+                    uint value;
+                    bool success = chipLib.ReadIoBit(portParsed, int.Parse(size), bitRange, out value);
+                    if (!success)
+                    {
+                        Console.WriteLine("Failed to read IO.");
+                        return;
+                    }
+
+                    Console.WriteLine($"0x{port.PadLeft(4, '0')} {bitRange} 0x{value:X}");
+                }
+            }
+            else if (args[paramIndex] == "--wriob")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var port = args.ElementAtOrDefault(paramIndex++);
+                var bitRange = args.ElementAtOrDefault(paramIndex++);
+                var value = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && port != null && bitRange != null && value != null)
+                {
+                    int startBit, endBit;
+
+                    if (port.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        port = port.Substring(2);
+                    }
+
+                    if (!ushort.TryParse(port, System.Globalization.NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ushort portParsed))
+                    {
+                        Console.WriteLine("Failed to write IO.");
+                        return;
+                    }
+
+                    var bitRangeParts = bitRange.Split(':');
+                    if (bitRangeParts.Length == 1)
+                    {
+                        if (!int.TryParse(bitRangeParts[0], out startBit))
+                        {
+                            Console.WriteLine("Failed to write IO.");
+                            return;
+                        }
+                        endBit = startBit;
+                    }
+                    else if (bitRangeParts.Length == 2)
+                    {
+                        if (!int.TryParse(bitRangeParts[0], out startBit) || !int.TryParse(bitRangeParts[1], out endBit))
+                        {
+                            Console.WriteLine("Failed to write IO.");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("Failed to write IO.");
+                        return;
+                    }
+
+                    uint newValue = (value.Equals("1", StringComparison.OrdinalIgnoreCase) || value.Equals("true", StringComparison.OrdinalIgnoreCase)) ? 1U : 0U;
+
+                    bool success = chipLib.WriteIoBit(portParsed, int.Parse(size), bitRange, newValue);
+                    if (!success)
+                    {
+                        Console.WriteLine("Failed to write IO.");
+                        return;
+                    }
+
+                    Console.WriteLine($"0x{port.PadLeft(4, '0')} {bitRange} 0x{newValue:X}");
+                }
+            }
+            else if (args[paramIndex] == "--rdmem")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var address = args.ElementAtOrDefault(paramIndex++);
+                if (size != null && address != null)
+                {
+                    ulong addressConverted = Convert.ToUInt64(address, 16);
+                    ulong value = 0;
+
+                    try
+                    {
+                        int dataSize = Convert.ToInt32(size);
+
+                        if (dataSize == 64)
+                        {
+                            if (!chipLib.ReadMem(addressConverted, dataSize, out value))
+                            {
+                                Console.WriteLine("Failed to read MEM.");
+                                return;
+                            }
+                            Console.WriteLine($"0x{addressConverted:X8} 0x{value:X16}");
+                        }
+                        else if (dataSize == 32)
+                        {
+                            if (!chipLib.ReadMem(addressConverted, dataSize, out value))
+                            {
+                                Console.WriteLine("Failed to read MEM.");
+                                return;
+                            }
+                            Console.WriteLine($"0x{addressConverted:X8} 0x{value:X8}");
+                        }
+                        else if (dataSize == 16)
+                        {
+                            ulong shortValue;
+                            if (!chipLib.ReadMem(addressConverted, dataSize, out shortValue))
+                            {
+                                Console.WriteLine("Failed to read MEM.");
+                                return;
+                            }
+                            Console.WriteLine($"0x{addressConverted:X8} 0x{(ushort)shortValue:X4}");
+                        }
+                        else if (dataSize == 8)
+                        {
+                            ulong byteValue;
+                            if (!chipLib.ReadMem(addressConverted, dataSize, out byteValue))
+                            {
+                                Console.WriteLine("Failed to read MEM.");
+                                return;
+                            }
+                            Console.WriteLine($"0x{addressConverted:X8} 0x{(byte)byteValue:X2}");
+                        }
+                        else
+                        {
+                            Console.WriteLine("Failed to read MEM.");
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        Console.WriteLine("Failed to read MEM.");
+                    }
+                }
+            }
+            else if (args[paramIndex] == "--wrmem")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var address = args.ElementAtOrDefault(paramIndex++);
+                var value = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && address != null && value != null)
+                {
+                    if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        value = value.Substring(2);
+                    }
+
+                    ulong addressConverted = Convert.ToUInt64(address, 16);
+                    ulong valueConverted = ulong.Parse(value, System.Globalization.NumberStyles.HexNumber);
+
+                    try
+                    {
+                        int dataSize = Convert.ToInt32(size);
+
+                        if (dataSize == 64)
+                        {
+                            bool success = chipLib.WriteMem(addressConverted, dataSize, valueConverted);
+                            if (!success)
+                            {
+                                Console.WriteLine("Failed to write MEM.");
+                                return;
+                            }
+                            Console.WriteLine($"0x{addressConverted:X8} 0x{valueConverted:X16}");
+                        }
+                        else if (dataSize == 32)
+                        {
+                            bool success = chipLib.WriteMem(addressConverted, dataSize, (uint)valueConverted);
+                            if (!success)
+                            {
+                                Console.WriteLine("Failed to write MEM.");
+                                return;
+                            }
+                            Console.WriteLine($"0x{addressConverted:X8} 0x{valueConverted:X8}");
+                        }
+                        else if (dataSize == 16)
+                        {
+                            bool success = chipLib.WriteMem(addressConverted, dataSize, (uint)valueConverted);
+                            if (!success)
+                            {
+                                Console.WriteLine("Failed to write MEM.");
+                                return;
+                            }
+                            Console.WriteLine($"0x{addressConverted:X8} 0x{valueConverted:X4}");
+                        }
+                        else if (dataSize == 8)
+                        {
+                            bool success = chipLib.WriteMem(addressConverted, dataSize, (uint)valueConverted);
+                            if (!success)
+                            {
+                                Console.WriteLine("Failed to write MEM.");
+                                return;
+                            }
+                            Console.WriteLine($"0x{addressConverted:X8} 0x{valueConverted:X2}");
+                        }
+                        else
+                        {
+                            Console.WriteLine("Failed to write MEM.");
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        Console.WriteLine("Failed to write MEM.");
+                    }
+                }
+            }
+            else if (args[paramIndex] == "--rdmemb")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var address = args.ElementAtOrDefault(paramIndex++);
+                var bitRange = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && address != null && bitRange != null)
+                {
+                    ulong addressConverted = Convert.ToUInt64(address, 16);
+                    ulong value;
+
+                    if (!chipLib.ReadMemBit(addressConverted, Convert.ToInt32(size), bitRange, out value))
+                    {
+                        Console.WriteLine("Failed to read MEM.");
+                        return;
+                    }
+
+                    Console.WriteLine($"0x{addressConverted:X8} {bitRange} 0x{value:X}");
+                }
+            }
+            else if (args[paramIndex] == "--wrmemb")
+            {
+                paramIndex++;
+                var size = args.ElementAtOrDefault(paramIndex++);
+                var address = args.ElementAtOrDefault(paramIndex++);
+                var bitRange = args.ElementAtOrDefault(paramIndex++);
+                var value = args.ElementAtOrDefault(paramIndex++);
+
+                if (size != null && address != null && bitRange != null && value != null)
+                {
+                    if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        value = value.Substring(2);
+                    }
+
+                    ulong addressConverted = Convert.ToUInt64(address, 16);
+                    ulong valueConverted = ulong.Parse(value, System.Globalization.NumberStyles.HexNumber);
+
+                    bool success = chipLib.WriteMemBit(addressConverted, Convert.ToInt32(size), bitRange, valueConverted);
+                    if (!success)
+                    {
+                        Console.WriteLine("Failed to write MEM.");
+                        return;
+                    }
+
+                    Console.WriteLine($"0x{addressConverted:X8} {bitRange} 0x{valueConverted:X}");
+                }
+            }
+            else if (args[paramIndex] == "--rdpmc")
+            {
+                paramIndex++;
+                var index = args.ElementAtOrDefault(paramIndex++);
+
+                if (index != null)
+                {
+                    if (index.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                    {
+                        index = index.Substring(2);
+                    }
+
+                    bool success = chipLib.ReadPmc(uint.Parse(index, System.Globalization.NumberStyles.HexNumber), out ulong value);
+
+                    if (success)
+                    {
+                        Console.WriteLine($"0x{index.PadLeft(10, '0')} 0x{value:X8}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Failed to read PMC.");
+                    }
+                }
             }
             else
             {
-                return false;
+                Console.WriteLine("Invalid command. Use --help or /? for help.");
             }
+        }
+
+
+
+        static void PrintHelp()
+        {
+            Console.WriteLine("Usage:");
+
+            Console.WriteLine("\nMSR Commands");
+            Console.WriteLine("  --rdmsr    <address>                                           | Read MSR");
+            Console.WriteLine("  --wrmsr    <address> <edx> <eax>                               | Write MSR");
+            Console.WriteLine("  --rdmsrb   <address> <bit>                                     | Read MSR Bit");
+            Console.WriteLine("  --wrmsrb   <address> <bit> <value>                             | Write MSR Bit");
+
+            Console.WriteLine("\nPCI Commands");
+            Console.WriteLine("  --rdpci    <size> <bus:dev:func> <offset>                      | Read PCI configuration");
+            Console.WriteLine("  --wrpci    <size> <bus:dev:func> <offset> <value>              | Write PCI configuration");
+            Console.WriteLine("  --rdpcib   <size> <bus:dev:func> <offset> <bit>                | Read PCI Bit");
+            Console.WriteLine("  --wrpcib   <size> <bus:dev:func> <offset> <bit> <value>        | Write PCI Bit");
+
+            Console.WriteLine("\nI/O Commands");
+            Console.WriteLine("  --rdio     <size> <port>                                       | Read I/O port");
+            Console.WriteLine("  --wrio     <size> <port> <value>                               | Write I/O port");
+            Console.WriteLine("  --rdiob    <size> <port> <bit>                                 | Read I/O Port Bit");
+            Console.WriteLine("  --wriob    <size> <port> <bit> <value>                         | Write I/O Port Bit");
+
+            Console.WriteLine("\nMemory Commands");
+            Console.WriteLine("  --rdmem    <size> <address>                                    | Read Memory");
+            Console.WriteLine("  --wrmem    <size> <address> <value>                            | Write Memory");
+            Console.WriteLine("  --rdmemb   <size> <address> <bit>                              | Read Memory Bit");
+            Console.WriteLine("  --wrmemb   <size> <address> <bit> <value>                      | Write Memory Bit");
+
+            Console.WriteLine("\nPMC Commands");
+            Console.WriteLine("  --rdpmc    <index>                                             | Read PMC Counter");
+
+            Console.WriteLine("\nHelp");
+            Console.WriteLine("  --help or /?                                                   | Show this help menu");
         }
     }
-
-    public bool ReadMsrBit(uint msrIndex, string bitRange, out ulong result)
-    {
-        var bitRangeParts = bitRange.Split(':');
-        int startBit, endBit;
-
-        if (bitRangeParts.Length == 1)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit))
-            {
-                result = ulong.MaxValue;
-                return false;
-            }
-            endBit = startBit;
-        }
-        else if (bitRangeParts.Length == 2)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit) || !int.TryParse(bitRangeParts[1], out endBit))
-            {
-                result = ulong.MaxValue;
-                return false;
-            }
-        }
-        else
-        {
-            result = ulong.MaxValue;
-            return false;
-        }
-
-        if (startBit < 0 || endBit > 63)
-        {
-            result = ulong.MaxValue;
-            return false;
-        }
-
-        if (startBit < endBit)
-        {
-            int temp = startBit;
-            startBit = endBit;
-            endBit = temp;
-        }
-
-        ulong msrValue;
-        if (!ReadMsr(msrIndex, out msrValue))
-        {
-            result = ulong.MaxValue;
-            return false;
-        }
-
-        result = 0;
-        for (int bit = startBit; bit >= endBit; bit--)
-        {
-            ulong bitValue = (msrValue >> bit) & 1;
-            result |= (bitValue << (startBit - bit));
-        }
-
-        return true;
-    }
-
-    public bool WriteMsrBit(uint msrIndex, string bitRange, int newValue, bool allProcessors = true)
-    {
-        var bitRangeParts = bitRange.Split(':');
-        int startBit, endBit;
-
-        if (bitRangeParts.Length == 1)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit))
-            {
-                return false;
-            }
-            endBit = startBit;
-        }
-        else if (bitRangeParts.Length == 2)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit) || !int.TryParse(bitRangeParts[1], out endBit))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            return false;
-        }
-
-        if (startBit < 0 || endBit > 63)
-        {
-            return false;
-        }
-
-        if (startBit < endBit)
-        {
-            int temp = startBit;
-            startBit = endBit;
-            endBit = temp;
-        }
-
-        ulong msrValue;
-        if (!ReadMsr(msrIndex, out msrValue))
-        {
-            return false;
-        }
-
-        ulong mask = (1UL << (startBit - endBit + 1)) - 1;
-
-        ulong adjustedValue = (ulong)newValue & mask;
-
-        for (int bit = startBit; bit >= endBit; bit--)
-        {
-            if ((adjustedValue >> (startBit - bit) & 1) != 0)
-            {
-                msrValue |= (1UL << bit);
-            }
-            else
-            {
-                msrValue &= ~(1UL << bit);
-            }
-        }
-
-        return WriteMsr(msrIndex, msrValue, allProcessors);
-    }
-
-    public bool ReadPci(uint bus, uint device, uint function, byte offset, int dataSize, out uint value)
-    {
-        uint pciAddress = ols.PciBusDevFunc(bus, device, function);
-        value = 0;
-
-        if (dataSize == 8)
-        {
-            value = ols.ReadPciConfigByte(pciAddress, offset);
-        }
-        else if (dataSize == 16)
-        {
-            value = ols.ReadPciConfigWord(pciAddress, offset);
-        }
-        else if (dataSize == 32)
-        {
-            value = ols.ReadPciConfigDword(pciAddress, offset);
-        }
-        else
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    public bool WritePci(uint bus, uint device, uint function, byte offset, ulong value, int dataSize)
-    {
-        uint pciAddress = ols.PciBusDevFunc(bus, device, function);
-
-        bool result = false;
-        if (dataSize == 8)
-        {
-            ols.WritePciConfigByte(pciAddress, offset, (byte)value);
-            result = true;
-        }
-        else if (dataSize == 16)
-        {
-            ols.WritePciConfigWord(pciAddress, offset, (ushort)value);
-            result = true;
-        }
-        else if (dataSize == 32)
-        {
-            ols.WritePciConfigDword(pciAddress, offset, (uint)value);
-            result = true;
-        }
-
-        return result;
-    }
-
-
-    public bool ReadPciBit(uint bus, uint device, uint function, byte offset, string bitRange, int dataSize, out ulong result)
-    {
-        uint value;
-        if (!ReadPci(bus, device, function, offset, dataSize, out value))
-        {
-            result = ulong.MaxValue;
-            return false;
-        }
-
-        var bitRangeParts = bitRange.Split(':');
-        int startBit, endBit;
-
-        if (bitRangeParts.Length == 1)
-        {
-            startBit = int.Parse(bitRangeParts[0]);
-            endBit = startBit;
-        }
-        else if (bitRangeParts.Length == 2)
-        {
-            startBit = int.Parse(bitRangeParts[0]);
-            endBit = int.Parse(bitRangeParts[1]);
-        }
-        else
-        {
-            result = ulong.MaxValue;
-            return false;
-        }
-
-        if (startBit > endBit)
-        {
-            int temp = startBit;
-            startBit = endBit;
-            endBit = temp;
-        }
-
-        result = 0;
-        for (int bit = startBit; bit <= endBit; bit++)
-        {
-            ulong bitValue = (value >> bit) & 1;
-            result |= (bitValue << (bit - startBit));
-        }
-
-        return true;
-    }
-
-    public bool WritePciBit(uint bus, uint device, uint function, byte offset, string bitRange, ulong value, int dataSize)
-    {
-        uint pciAddress = ols.PciBusDevFunc(bus, device, function);
-        uint currentValue;
-
-        if (!ReadPci(bus, device, function, offset, dataSize, out currentValue))
-        {
-            return false;
-        }
-
-        var bitRangeParts = bitRange.Split(':');
-        int startBit, endBit;
-
-        if (bitRangeParts.Length == 1)
-        {
-            startBit = int.Parse(bitRangeParts[0]);
-            endBit = startBit;
-        }
-        else if (bitRangeParts.Length == 2)
-        {
-            startBit = int.Parse(bitRangeParts[0]);
-            endBit = int.Parse(bitRangeParts[1]);
-        }
-        else
-        {
-            return false;
-        }
-
-        if (startBit > endBit)
-        {
-            int temp = startBit;
-            startBit = endBit;
-            endBit = temp;
-        }
-
-        for (int bit = startBit; bit <= endBit; bit++)
-        {
-            if ((value & (1UL << (bit - startBit))) != 0)
-            {
-                currentValue |= (1U << bit);
-            }
-            else
-            {
-                currentValue &= ~(1U << bit);
-            }
-        }
-
-        WritePci(bus, device, function, offset, currentValue, dataSize);
-
-        return true;
-    }
-
-    public bool ReadIo(ushort port, int dataSize, out uint value)
-    {
-        value = 0;
-
-        if (dataSize == 8)
-        {
-            value = ols.ReadIoPortByte(port);
-        }
-        else if (dataSize == 16)
-        {
-            value = ols.ReadIoPortWord(port);
-        }
-        else if (dataSize == 32)
-        {
-            value = ols.ReadIoPortDword(port);
-        }
-        else
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    public bool WriteIo(ushort port, int dataSize, uint value)
-    {
-        bool result = false;
-
-        if (dataSize == 8)
-        {
-            ols.WriteIoPortByte(port, (byte)value);
-            result = true;
-        }
-        else if (dataSize == 16)
-        {
-            ols.WriteIoPortWord(port, (ushort)value);
-            result = true;
-        }
-        else if (dataSize == 32)
-        {
-            ols.WriteIoPortDword(port, value);
-            result = true;
-        }
-
-        return result;
-    }
-
-    public bool ReadIoBit(ushort port, int dataSize, string bitRange, out uint result)
-    {
-        result = uint.MaxValue;
-        uint value;
-
-        if (!ReadIo(port, dataSize, out value))
-        {
-            return false;
-        }
-
-        var bitRangeParts = bitRange.Split(':');
-        int startBit, endBit;
-
-        if (bitRangeParts.Length == 1)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit))
-            {
-                return false;
-            }
-            endBit = startBit;
-        }
-        else if (bitRangeParts.Length == 2)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit) || !int.TryParse(bitRangeParts[1], out endBit))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            return false;
-        }
-
-        if (startBit < 0 || endBit > 31)
-        {
-            return false;
-        }
-
-        if (startBit > endBit)
-        {
-            int temp = startBit;
-            startBit = endBit;
-            endBit = temp;
-        }
-
-        result = 0;
-        for (int bit = startBit; bit <= endBit; bit++)
-        {
-            uint bitValue = (value >> bit) & 1;
-            result |= (bitValue << (bit - startBit));
-        }
-
-        return true;
-    }
-
-    public bool WriteIoBit(ushort port, int dataSize, string bitRange, uint newValue)
-    {
-        uint currentValue;
-        if (!ReadIo(port, dataSize, out currentValue))
-        {
-            return false;
-        }
-
-        var bitRangeParts = bitRange.Split(':');
-        int startBit, endBit;
-
-        if (bitRangeParts.Length == 1)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit))
-            {
-                return false;
-            }
-            endBit = startBit;
-        }
-        else if (bitRangeParts.Length == 2)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit) || !int.TryParse(bitRangeParts[1], out endBit))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            return false;
-        }
-
-        if (startBit < 0 || endBit > 31)
-        {
-            return false;
-        }
-
-        if (startBit > endBit)
-        {
-            int temp = startBit;
-            startBit = endBit;
-            endBit = temp;
-        }
-
-        for (int bit = startBit; bit <= endBit; bit++)
-        {
-            if (newValue == 1)
-            {
-                currentValue |= (1U << bit);
-            }
-            else
-            {
-                currentValue &= ~(1U << bit);
-            }
-        }
-
-        WriteIo(port, dataSize, currentValue);
-
-        return true;
-    }
-
-    [DllImport("inpoutx64.dll", SetLastError = true, CallingConvention = CallingConvention.StdCall)]
-    public static extern IntPtr MapPhysToLin(IntPtr physicalAddress, uint size, ref IntPtr handle);
-
-    [DllImport("inpoutx64.dll", SetLastError = true, CallingConvention = CallingConvention.StdCall)]
-    public static extern bool UnmapPhysicalMemory(IntPtr handle, IntPtr virtualAddress);
-    public bool ReadMem(ulong physicalAddress, int dataSize, out ulong value)
-    {
-        value = 0;
-        IntPtr handle = IntPtr.Zero;
-        IntPtr ptr = MapPhysicalAddress(physicalAddress, dataSize, ref handle);
-        if (ptr == IntPtr.Zero) return false;
-
-        byte[] buffer = new byte[dataSize / 8];
-
-        Marshal.Copy(ptr, buffer, 0, buffer.Length);
-
-        UnmapPhysicalMemory(handle, ptr);
-
-        if (dataSize == 8)
-        {
-            value = buffer[0];
-        }
-        else if (dataSize == 16)
-        {
-            value = BitConverter.ToUInt16(buffer, 0);
-        }
-        else if (dataSize == 32)
-        {
-            value = BitConverter.ToUInt32(buffer, 0);
-        }
-        else if (dataSize == 64)
-        {
-            value = BitConverter.ToUInt64(buffer, 0);
-        }
-        else
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    public bool WriteMem(ulong physicalAddress, int dataSize, ulong value)
-    {
-        IntPtr handle = IntPtr.Zero;
-        IntPtr ptr = MapPhysicalAddress(physicalAddress, dataSize, ref handle);
-
-        if (ptr == IntPtr.Zero)
-        {
-            return false;
-        }
-
-        byte[] buffer = new byte[dataSize / 8];
-
-        if (dataSize == 8)
-        {
-            buffer[0] = (byte)value;
-        }
-        else if (dataSize == 16)
-        {
-            buffer = BitConverter.GetBytes((ushort)value);
-        }
-        else if (dataSize == 32)
-        {
-            buffer = BitConverter.GetBytes((uint)value);
-        }
-        else if (dataSize == 64)
-        {
-            buffer = BitConverter.GetBytes(value);
-        }
-
-        try
-        {
-            Marshal.Copy(buffer, 0, ptr, buffer.Length);
-            UnmapPhysicalMemory(handle, ptr);
-            return true;
-        }
-        catch (Exception)
-        {
-            UnmapPhysicalMemory(handle, ptr);
-            return false;
-        }
-    }
-
-    public bool ReadMemBit(ulong physicalAddress, int dataSize, string bitRange, out ulong result)
-    {
-        result = ulong.MaxValue;
-        var bitRangeParts = bitRange.Split(':');
-        int startBit, endBit;
-
-        if (bitRangeParts.Length == 1)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit))
-            {
-                return false;
-            }
-            endBit = startBit;
-        }
-        else if (bitRangeParts.Length == 2)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit) || !int.TryParse(bitRangeParts[1], out endBit))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            return false;
-        }
-
-        if (startBit < 0 || endBit > 63)
-        {
-            return false;
-        }
-
-        if (startBit > endBit)
-        {
-            int temp = startBit;
-            startBit = endBit;
-            endBit = temp;
-        }
-
-        ulong value;
-        if (!ReadMem(physicalAddress, dataSize, out value))
-        {
-            return false;
-        }
-
-        result = 0;
-        for (int bit = startBit; bit <= endBit; bit++)
-        {
-            ulong bitValue = (value >> bit) & 1;
-            result |= (bitValue << (bit - startBit));
-        }
-
-        return true;
-    }
-
-    public bool WriteMemBit(ulong physicalAddress, int dataSize, string bitRange, ulong newValue)
-    {
-        ulong currentValue;
-        if (!ReadMem(physicalAddress, dataSize, out currentValue))
-        {
-            return false;
-        }
-
-        var bitRangeParts = bitRange.Split(':');
-        int startBit, endBit;
-
-        if (bitRangeParts.Length == 1)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit))
-            {
-                return false;
-            }
-            endBit = startBit;
-        }
-        else if (bitRangeParts.Length == 2)
-        {
-            if (!int.TryParse(bitRangeParts[0], out startBit) || !int.TryParse(bitRangeParts[1], out endBit))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            return false;
-        }
-
-        if (startBit < 0 || endBit > 63)
-        {
-            return false;
-        }
-
-        if (startBit > endBit)
-        {
-            int temp = startBit;
-            startBit = endBit;
-            endBit = temp;
-        }
-
-        for (int bit = startBit; bit <= endBit; bit++)
-        {
-            if ((newValue & (1UL << (bit - startBit))) != 0)
-            {
-                currentValue |= (1UL << bit);
-            }
-            else
-            {
-                currentValue &= ~(1UL << bit);
-            }
-        }
-
-        return WriteMem(physicalAddress, dataSize, currentValue);
-    }
-
-    private IntPtr MapPhysicalAddress(ulong physicalAddress, int dataSize, ref IntPtr handle)
-    {
-        IntPtr address = (IntPtr)physicalAddress;
-        IntPtr mappedAddress = MapPhysToLin(address, (uint)(dataSize / 8), ref handle);
-        return mappedAddress;
-    }
-
-}
-public class MsrException : Exception
-{
-    public MsrException(string message) : base(message) { }
 }
