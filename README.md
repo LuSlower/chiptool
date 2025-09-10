@@ -1,6 +1,8 @@
 # chiptool
 low-level modification tool
 
+[![Total Downloads](https://img.shields.io/github/downloads/LuSlower/chiptool/total.svg)](https://github.com/LuSlower/chiptool/releases)
+
 ```
 Usage:
 
