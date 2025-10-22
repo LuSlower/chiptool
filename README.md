@@ -29,6 +29,8 @@ Memory Commands
   --wrmem    <size> <address> <value>                            | Write Memory
   --rdmemb   <size> <address> <bit>                              | Read Memory Bit
   --wrmemb   <size> <address> <bit> <value>                      | Write Memory Bit
+  --rdmemblk  <bytes> <address>                                  | Read Memory Block (hexdump max 3584)
+  --wrmemblk  <bytes> <address> <byte0> <byte1> ...              | Write Memory Block (hexdump verify)
 
 PMC Commands
   --rdpmc    <index>                                             | Read PMC Counter
