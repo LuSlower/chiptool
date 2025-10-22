@@ -553,23 +553,21 @@ namespace chiptool
                         }
                         else if (dataSize == 16)
                         {
-                            ulong shortValue;
-                            if (!chipLib.ReadMem(addressConverted, dataSize, out shortValue))
+                            if (!chipLib.ReadMem(addressConverted, dataSize, out value))
                             {
                                 Console.WriteLine("Failed to read MEM.");
                                 return;
                             }
-                            Console.WriteLine($"0x{addressConverted:X8} 0x{(ushort)shortValue:X4}");
+                            Console.WriteLine($"0x{addressConverted:X8} 0x{value:X4}");
                         }
                         else if (dataSize == 8)
                         {
-                            ulong byteValue;
-                            if (!chipLib.ReadMem(addressConverted, dataSize, out byteValue))
+                            if (!chipLib.ReadMem(addressConverted, dataSize, out value))
                             {
                                 Console.WriteLine("Failed to read MEM.");
                                 return;
                             }
-                            Console.WriteLine($"0x{addressConverted:X8} 0x{(byte)byteValue:X2}");
+                            Console.WriteLine($"0x{addressConverted:X8} 0x{value:X2}");
                         }
                         else
                         {
@@ -703,6 +701,84 @@ namespace chiptool
                     Console.WriteLine($"0x{addressConverted:X8} {bitRange} 0x{valueConverted:X}");
                 }
             }
+            else if (args[paramIndex] == "--rdmemblk")
+            {
+                paramIndex++;
+                var byteCountStr = args.ElementAtOrDefault(paramIndex++);
+                var address = args.ElementAtOrDefault(paramIndex++);
+
+                if (byteCountStr != null && address != null)
+                {
+                    if (!uint.TryParse(byteCountStr, out uint byteCount))
+                    {
+                        Console.WriteLine("Invalid byte count.");
+                        return;
+                    }
+
+                    ulong addressConverted = Convert.ToUInt64(address, 16);
+                    byte[] buffer;
+
+                    if (!chipLib.ReadMemBlock(addressConverted, byteCount, out buffer))
+                    {
+                        Console.WriteLine("Failed to read MEM block.");
+                        return;
+                    }
+
+                    HexDump(buffer, byteCount, addressConverted);
+                }
+            }
+            else if (args[paramIndex] == "--wrmemblk")
+            {
+                paramIndex++;
+                var byteCountStr = args.ElementAtOrDefault(paramIndex++);
+                var address = args.ElementAtOrDefault(paramIndex++);
+                if (byteCountStr != null && address != null)
+                {
+                    if (!uint.TryParse(byteCountStr, out uint byteCount))
+                    {
+                        Console.WriteLine("Invalid byte count.");
+                        return;
+                    }
+
+                    if (args.Length - paramIndex != (int)byteCount)
+                    {
+                        Console.WriteLine("Incorrect number of bytes provided.");
+                        return;
+                    }
+
+                    byte[] buffer = new byte[byteCount];
+                    for (int i = 0; i < (int)byteCount; i++)
+                    {
+                        var byteStr = args[paramIndex + i];
+                        if (byteStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                        {
+                            byteStr = byteStr.Substring(2);
+                        }
+                        if (!byte.TryParse(byteStr, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out buffer[i]))
+                        {
+                            Console.WriteLine($"Invalid byte value: {args[paramIndex + i]}");
+                            return;
+                        }
+                    }
+
+                    ulong addressConverted = Convert.ToUInt64(address, 16);
+
+                    if (!chipLib.WriteMemBlock(addressConverted, buffer))
+                    {
+                        Console.WriteLine("Failed to write MEM block.");
+                        return;
+                    }
+
+                    if (chipLib.ReadMemBlock(addressConverted, byteCount, out byte[] readBuffer))
+                    {
+                        HexDump(readBuffer, byteCount, addressConverted);
+                    }
+                    else
+                    {
+                        Console.WriteLine("Failed to read back MEM block for verification.");
+                    }
+                }
+            }
             else if (args[paramIndex] == "--rdpmc")
             {
                 paramIndex++;
@@ -733,7 +809,49 @@ namespace chiptool
             }
         }
 
+        private static void HexDump(byte[] data, uint size, ulong prefixAddr)
+        {
+            char[] ascii = new char[17];
+            ascii[16] = '\0';
 
+            for (uint i = 0; i < size; ++i)
+            {
+                if (i % 16 == 0)
+                    Console.Write($"{prefixAddr + i:X16} | ");
+
+                Console.Write($"{data[i]:X2} ");
+                if (data[i] >= ' ' && data[i] <= '~')
+                {
+                    ascii[i % 16] = (char)data[i];
+                }
+                else
+                {
+                    ascii[i % 16] = '.';
+                }
+
+                if ((i + 1) % 8 == 0 || i + 1 == size)
+                {
+                    Console.Write(" ");
+                    if ((i + 1) % 16 == 0)
+                    {
+                        Console.WriteLine($"|  {new string(ascii)}");
+                    }
+                    else if (i + 1 == size)
+                    {
+                        ascii[(i + 1) % 16] = '\0';
+                        if ((i + 1) % 16 <= 8)
+                        {
+                            Console.Write(" ");
+                        }
+                        for (uint j = (i + 1) % 16; j < 16; ++j)
+                        {
+                            Console.Write("   ");
+                        }
+                        Console.WriteLine($"|  {new string(ascii)}");
+                    }
+                }
+            }
+        }
 
         static void PrintHelp()
         {
@@ -761,7 +879,9 @@ namespace chiptool
             Console.WriteLine("  --rdmem  <size> <address>   | Read Memory");
             Console.WriteLine("  --wrmem  <size> <address> <value>   | Write Memory");
             Console.WriteLine("  --rdmemb  <size> <address> <bit>   | Read Memory Bit");
-            Console.WriteLine("  --wrmemb  <size><address> <bit> <value>   | Write Memory Bit");
+            Console.WriteLine("  --wrmemb  <size> <address> <bit> <value>   | Write Memory Bit");
+            Console.WriteLine("  --rdmemblk  <bytes> <address>   | Read Memory Block (hexdump max 3584)");
+            Console.WriteLine("  --wrmemblk  <bytes> <address> <byte0> <byte1> ...   | Write Memory Block (hexdump verify)");
 
             // PMC Commands
             Console.WriteLine("  --rdpmc <index>  | Read PMC Counter");

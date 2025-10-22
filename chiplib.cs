@@ -1,10 +1,12 @@
-﻿using System;
+﻿using OpenLibSys;
+using System;
 using System.Diagnostics;
 using System.Linq;
 using System.Management;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Security;
 using System.Security.Principal;
-using OpenLibSys;
 
 public class chiplib
 {
@@ -289,7 +291,6 @@ public class chiplib
         return result;
     }
 
-
     public bool ReadPciBit(uint bus, uint device, uint function, byte offset, string bitRange, int dataSize, out ulong result)
     {
         uint value;
@@ -554,6 +555,8 @@ public class chiplib
 
     [DllImport("inpoutx64.dll", SetLastError = true, CallingConvention = CallingConvention.StdCall)]
     public static extern bool UnmapPhysicalMemory(IntPtr handle, IntPtr virtualAddress);
+
+    [HandleProcessCorruptedStateExceptions]
     public bool ReadMem(ulong physicalAddress, int dataSize, out ulong value)
     {
         value = 0;
@@ -563,7 +566,15 @@ public class chiplib
 
         byte[] buffer = new byte[dataSize / 8];
 
-        Marshal.Copy(ptr, buffer, 0, buffer.Length);
+        try
+        {
+            Marshal.Copy(ptr, buffer, 0, buffer.Length);
+        }
+        catch (AccessViolationException)
+        {
+            UnmapPhysicalMemory(handle, ptr);
+            return false;
+        }
 
         UnmapPhysicalMemory(handle, ptr);
 
@@ -591,6 +602,7 @@ public class chiplib
         return true;
     }
 
+    [HandleProcessCorruptedStateExceptions]
     public bool WriteMem(ulong physicalAddress, int dataSize, ulong value)
     {
         IntPtr handle = IntPtr.Zero;
@@ -626,7 +638,7 @@ public class chiplib
             UnmapPhysicalMemory(handle, ptr);
             return true;
         }
-        catch (Exception)
+        catch (AccessViolationException)
         {
             UnmapPhysicalMemory(handle, ptr);
             return false;
@@ -745,14 +757,58 @@ public class chiplib
         return WriteMem(physicalAddress, dataSize, currentValue);
     }
 
+    [HandleProcessCorruptedStateExceptions]
+    public bool ReadMemBlock(ulong physicalAddress, uint byteCount, out byte[] value)
+    {
+        value = new byte[byteCount];
+        IntPtr handle = IntPtr.Zero;
+        IntPtr ptr = MapPhysToLin((IntPtr)physicalAddress, byteCount, ref handle);
+        if (ptr == IntPtr.Zero) return false;
+
+        try
+        {
+            Marshal.Copy(ptr, value, 0, (int)byteCount);
+        }
+        catch (AccessViolationException)
+        {
+            UnmapPhysicalMemory(handle, ptr);
+            return false;
+        }
+
+        UnmapPhysicalMemory(handle, ptr);
+        return true;
+    }
+
+    [HandleProcessCorruptedStateExceptions]
+    public bool WriteMemBlock(ulong physicalAddress, byte[] value)
+    {
+        uint byteCount = (uint)value.Length;
+        IntPtr handle = IntPtr.Zero;
+        IntPtr ptr = MapPhysToLin((IntPtr)physicalAddress, byteCount, ref handle);
+        if (ptr == IntPtr.Zero) return false;
+
+        try
+        {
+            Marshal.Copy(value, 0, ptr, (int)byteCount);
+        }
+        catch (AccessViolationException)
+        {
+            UnmapPhysicalMemory(handle, ptr);
+            return false;
+        }
+
+        UnmapPhysicalMemory(handle, ptr);
+        return true;
+    }
+
     private IntPtr MapPhysicalAddress(ulong physicalAddress, int dataSize, ref IntPtr handle)
     {
         IntPtr address = (IntPtr)physicalAddress;
         IntPtr mappedAddress = MapPhysToLin(address, (uint)(dataSize / 8), ref handle);
         return mappedAddress;
     }
-
 }
+
 public class MsrException : Exception
 {
     public MsrException(string message) : base(message) { }
