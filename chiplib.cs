@@ -1,11 +1,10 @@
-﻿using OpenLibSys;
+using OpenLibSys;
 using System;
 using System.Diagnostics;
 using System.Linq;
 using System.Management;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
-using System.Security;
 using System.Security.Principal;
 
 public class chiplib
@@ -291,6 +290,7 @@ public class chiplib
         return result;
     }
 
+
     public bool ReadPciBit(uint bus, uint device, uint function, byte offset, string bitRange, int dataSize, out ulong result)
     {
         uint value;
@@ -555,8 +555,6 @@ public class chiplib
 
     [DllImport("inpoutx64.dll", SetLastError = true, CallingConvention = CallingConvention.StdCall)]
     public static extern bool UnmapPhysicalMemory(IntPtr handle, IntPtr virtualAddress);
-
-    [HandleProcessCorruptedStateExceptions]
     public bool ReadMem(ulong physicalAddress, int dataSize, out ulong value)
     {
         value = 0;
@@ -566,15 +564,7 @@ public class chiplib
 
         byte[] buffer = new byte[dataSize / 8];
 
-        try
-        {
-            Marshal.Copy(ptr, buffer, 0, buffer.Length);
-        }
-        catch (AccessViolationException)
-        {
-            UnmapPhysicalMemory(handle, ptr);
-            return false;
-        }
+        Marshal.Copy(ptr, buffer, 0, buffer.Length);
 
         UnmapPhysicalMemory(handle, ptr);
 
@@ -602,7 +592,6 @@ public class chiplib
         return true;
     }
 
-    [HandleProcessCorruptedStateExceptions]
     public bool WriteMem(ulong physicalAddress, int dataSize, ulong value)
     {
         IntPtr handle = IntPtr.Zero;
@@ -638,7 +627,7 @@ public class chiplib
             UnmapPhysicalMemory(handle, ptr);
             return true;
         }
-        catch (AccessViolationException)
+        catch (Exception)
         {
             UnmapPhysicalMemory(handle, ptr);
             return false;
@@ -807,8 +796,8 @@ public class chiplib
         IntPtr mappedAddress = MapPhysToLin(address, (uint)(dataSize / 8), ref handle);
         return mappedAddress;
     }
-}
 
+}
 public class MsrException : Exception
 {
     public MsrException(string message) : base(message) { }
